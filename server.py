@@ -318,3 +318,21 @@ def mark_attendance(data: dict):
     attendance_collection.insert_one(attendance)
 
     return {"message": "Attendance marked"}
+
+
+from pymongo import MongoClient
+import os
+
+MONGO_URL = os.getenv("MONGO_URL")
+
+client = MongoClient(MONGO_URL)
+db = client["niktech"]
+collection = db["attendance"]
+
+@app.get("/test")
+def test_insert():
+    collection.insert_one({
+        "name": "Nikhil",
+        "status": "Present"
+    })
+    return {"message": "Data inserted"}
