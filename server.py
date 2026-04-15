@@ -24,15 +24,30 @@ attendance_collection = db["attendance"]
 # -------------------------
 # REGISTER USER
 # -------------------------
+from fastapi import HTTPException
+
 @app.post("/register")
 def register(user: dict):
-    user["role"] ="user"
-    if users_collection.find_one({"email": user["email"]}):
-        raise HTTPException(status_code=400, detail="Email already exists")
+    try:
+        user["role"] = "user"
 
-    user["password"] = hash_password(user["password"])
-    users_collection.insert_one(user)
-    return {"message": "User registered"}
+        # check email exist
+        if users_collection.find_one({"email": user.get("email")}):
+            raise HTTPException(status_code=400, detail="Email already exists")
+
+        # password hash
+        user["password"] = hash_password(user.get("password"))
+
+        # insert
+        result = users_collection.insert_one(user)
+
+        return {
+            "message": "User registered successfully",
+            "id": str(result.inserted_id)
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
 
 # -------------------------
 # LOGIN
