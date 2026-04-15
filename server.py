@@ -77,7 +77,7 @@ def get_users():
 def check_in(data: dict):
     fingerprint_id = data.get("fingerprint_id")
 
-    user = users_collection.find_one({"fingerprint_id": fingerprint_id})
+    user = users_collection.find_one({"$or":[{"fingerprint_id": fingerprint_id},{"fingerprint_id":str(fingerprint_id)}]})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
