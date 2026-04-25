@@ -398,16 +398,5 @@ db = client["niktech_secure"]
 users_collection = db["users"]
 
 
-@app.post("/add-user")
-def add_user(data: dict):
-
-    users_collection.insert_one({
-        "name": data["name"],
-        "fingerprint_id": data["fingerprint_id"],
-        "enroll": data.get("enroll", False)
-    })
-
-    return {"status": "user added"}
-
 
 
