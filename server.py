@@ -388,34 +388,6 @@ def attendance(data: dict):
         "status": "success",
         "name": user["name"]
     }
-    from fastapi import FastAPI
-from pymongo import MongoClient
-
-app = FastAPI()
-
-client = MongoClient("your_mongodb_url")
-db = client["niktech_secure"]
-users_collection = db["users"]
-from fastapi import FastAPI
-from pymongo import MongoClient
-
-app = FastAPI()
-
-client = MongoClient("your_mongodb_url")
-db = client["niktech_secure"]
-users_collection = db["users"]
-
-
-@app.post("/add-user")
-def add_user(data: dict):
-
-    users_collection.insert_one({
-        "name": data["name"],
-        "fingerprint_id": data["fingerprint_id"],
-        "enroll": data.get("enroll", False)
-    })
-
-    return {"status": "user added"}
 
 
 
