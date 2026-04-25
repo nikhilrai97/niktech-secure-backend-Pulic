@@ -351,3 +351,43 @@ def test_insert():
         "status": "Present"
     })
     return {"message": "Data inserted"}
+from bson import ObjectId
+
+@app.get("/check-enroll")
+def check_enroll():
+    user = users_collection.find_one({"enroll": True})
+    if not user:
+        return {"status": "none"}
+
+    return {
+        "status": "found",
+        "id": str(user["_id"]),
+        "fingerprint_id": int(user["fingerprint_id"]),
+        "name": user["name"]
+    }
+@app.post("/enroll-done")
+def enroll_done(data: dict):
+    users_collection.update_one(
+        {"_id": ObjectId(data["id"])},
+        {"$set": {"enroll": False}}
+    )
+    return {"status": "done"}
+
+@app.post("/attendance")
+def attendance(data: dict):
+    user = users_collection.find_one({
+        "fingerprint_id": int(data["fingerprint_id"])
+    })
+    if not user:
+        return {"status": "error"}
+
+    # save attendance (optional)
+    # attendance_collection.insert_one({...})
+
+    return {
+        "status": "success",
+        "name": user["name"]
+    }
+
+
+
