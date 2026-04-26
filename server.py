@@ -67,9 +67,11 @@ def login(data: dict):
 # -------------------------
 @app.get("/users")
 def get_users():
-    users = users_collection.find()
-    return [user_model(u) for u in users]
-
+    users = []
+    for u in users_collection.find():
+        u["_id"] = str(u["_id"]) # 🔥 fix
+        users.append(u)
+    return users
 # -------------------------
 # CHECK IN (ESP32 / APP)
 # -------------------------
