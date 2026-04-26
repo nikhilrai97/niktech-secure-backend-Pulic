@@ -391,15 +391,20 @@ def attendance(data: dict):
         "name": user["name"]
     }
 
-@app.post("/add-user")
-def add_user(data: dict):
+from bson import ObjectId
 
-    users_collection.insert_one({
-        "name": data["name"],
-        "fingerprint_id": data["fingerprint_id"],
-        "enroll": data.get("enroll", False)
-    })
+@app.put("/add-user/{user_id}")
+def add_user(user_id: str, data: dict):
 
-    return {"status": "user added"}
+    users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "fingerprint_id": data["fingerprint_id"],
+                "enroll": True
+            }
+        }
+    )
 
+    return {"status": "fingerprint linked"}
 
