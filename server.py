@@ -403,4 +403,3 @@ def add_user(data: dict):
     return {"status": "user added"}
 
 
-
