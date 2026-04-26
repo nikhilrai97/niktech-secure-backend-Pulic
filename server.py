@@ -377,20 +377,26 @@ def enroll_done(data: dict):
 
 @app.post("/attendance")
 def attendance(data: dict):
+    fingerprint_id = int(data.get("fingerprint_id"))
+
     user = users_collection.find_one({
-        "fingerprint_id": int(data["fingerprint_id"])
+        "fingerprint_id": fingerprint_id
     })
+
     if not user:
-        return {"status": "error"}
+        return {"name": "ERROR"}
 
-    # save attendance (optional)
-    # attendance_collection.insert_one({...})
-
-    return {
-        "status": "success",
-        "name": user["name"]
+    attendance = {
+        "user_id": str(user["_id"]),
+        "check_in": datetime.now(),
+        "status": "present"
     }
 
+    attendance_collection.insert_one(attendance)
+
+    return {
+        "name": user["name"]
+    }
 from bson import ObjectId
 
 @app.put("/add-user/{user_id}")
