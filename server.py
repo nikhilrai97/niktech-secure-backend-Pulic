@@ -362,7 +362,7 @@ def check_enroll():
         return {"status": "none"}
 
     return {
-        "status": "found",
+        "status": "pending",
         "id": str(user["_id"]),
         "fingerprint_id": int(user["fingerprint_id"]),
         "name": user["name"]
