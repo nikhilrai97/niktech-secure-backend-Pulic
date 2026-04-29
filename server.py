@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from bson import ObjectId
 from fastapi import FastAPI, HTTPException
@@ -8,6 +9,13 @@ from pydantic import BaseModel
 from auth import create_token, hash_password, verify_password
 from database import attendance_collection, settings_collection, users_collection
 from models import attendance_model, user_model
+
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def now_ist():
+    return datetime.now(IST).replace(tzinfo=None)
+
 
 app = FastAPI()
 
@@ -29,7 +37,7 @@ class UserUpdate(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "server running"}
+    return {"status": "server running", "time": now_ist()}
 
 
 @app.post("/register")
@@ -257,7 +265,7 @@ def attendance(data: dict):
         settings = get_attendance_settings()
         duplicate_minutes = settings["duplicate_punch_minutes"]
 
-        now = datetime.now()
+        now = now_ist()
         today_start = datetime(now.year, now.month, now.day, 0, 0, 0)
         today_end = datetime(now.year, now.month, now.day, 23, 59, 59)
 
@@ -284,14 +292,16 @@ def attendance(data: dict):
             return {
                 "name": user.get("name", "User"),
                 "action": "in_punch",
-                "message": "In Punch Done"
+                "message": "In Punch Done",
+                "time": now
             }
 
         if today_record.get("check_out"):
             return {
                 "name": user.get("name", "User"),
                 "action": "already_done",
-                "message": "Already Done Today"
+                "message": "Already Done Today",
+                "time": now
             }
 
         check_in_time = today_record.get("check_in")
@@ -301,7 +311,8 @@ def attendance(data: dict):
             return {
                 "name": user.get("name", "User"),
                 "action": "duplicate",
-                "message": "Duplicate Punch"
+                "message": "Duplicate Punch",
+                "time": now
             }
 
         attendance_collection.update_one(
@@ -317,7 +328,8 @@ def attendance(data: dict):
         return {
             "name": user.get("name", "User"),
             "action": "out_punch",
-            "message": "Out Punch Done"
+            "message": "Out Punch Done",
+            "time": now
         }
 
     except Exception as e:
@@ -346,7 +358,7 @@ def check_in(data: dict):
         "user_id": str(user["_id"]),
         "fingerprint_id": fingerprint_id,
         "name": user.get("name", ""),
-        "check_in": datetime.now(),
+        "check_in": now_ist(),
         "status": "present"
     }
 
@@ -371,7 +383,7 @@ def check_out(data: dict):
         {"_id": record["_id"]},
         {
             "$set": {
-                "check_out": datetime.now(),
+                "check_out": now_ist(),
                 "status": "completed"
             }
         }
@@ -382,7 +394,7 @@ def check_out(data: dict):
 
 @app.get("/attendance/today")
 def today_attendance():
-    today = datetime.now().date()
+    today = now_ist().date()
     result = []
 
     for record in attendance_collection.find():
@@ -396,7 +408,7 @@ def today_attendance():
 
 @app.get("/stats/today")
 def today_stats():
-    today = datetime.now().date()
+    today = now_ist().date()
     present = 0
 
     for record in attendance_collection.find():
@@ -420,7 +432,7 @@ def attendance_summary(days: int = 30):
         settings = get_attendance_settings()
         report_days = int(days or settings["report_days"])
 
-        today = datetime.now()
+        today = now_ist()
         start_date = today - timedelta(days=report_days)
 
         users = list(users_collection.find())
@@ -464,7 +476,7 @@ def attendance_summary(days: int = 30):
 
 @app.get("/attendance/user/{user_id}")
 def get_user_attendance_records(user_id: str):
-    records = list(attendance_collection.find({"user_id": user_id}))
+    records = list(attendance_collection.find({"user_id": user_id}).sort("check_in", -1))
     result = []
 
     for record in records:
@@ -483,7 +495,7 @@ def get_user_attendance_records(user_id: str):
 
 @app.get("/attendance/weekly/{user_id}")
 def weekly_attendance(user_id: str):
-    today = datetime.now()
+    today = now_ist()
     last_7_days = today - timedelta(days=7)
 
     records = list(attendance_collection.find({
@@ -512,7 +524,7 @@ def weekly_attendance(user_id: str):
 
 @app.get("/attendance/monthly/{user_id}")
 def monthly_attendance(user_id: str):
-    today = datetime.now()
+    today = now_ist()
     last_30_days = today - timedelta(days=30)
 
     records = list(attendance_collection.find({
@@ -547,7 +559,7 @@ def attendance_stats(user_id: str):
     absent = 0
 
     for record in records:
-        if record.get("status") == "present":
+        if record.get("status") in ["present", "completed"]:
             present += 1
         else:
             absent += 1
@@ -560,7 +572,7 @@ def attendance_stats(user_id: str):
 
 @app.get("/attendance/{user_id}")
 def get_attendance_by_user_id(user_id: str):
-    records = attendance_collection.find({"user_id": user_id})
+    records = attendance_collection.find({"user_id": user_id}).sort("check_in", -1)
     result = []
 
     for record in records:
