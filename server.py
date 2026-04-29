@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from auth import create_token, hash_password, verify_password
-from database import attendance_collection, users_collection
+from database import attendance_collection, settings_collection, users_collection
 from models import attendance_model, user_model
 
 app = FastAPI()
@@ -180,6 +180,52 @@ def enroll_done(data: dict):
     return {"status": "done"}
 
 
+def get_attendance_settings():
+    settings = settings_collection.find_one({"type": "attendance"})
+
+    if not settings:
+        return {
+            "duplicate_punch_minutes": 60,
+            "report_days": 30,
+            "late_after": "10:00",
+            "working_hours": 8
+        }
+
+    return {
+        "duplicate_punch_minutes": int(settings.get("duplicate_punch_minutes", 60)),
+        "report_days": int(settings.get("report_days", 30)),
+        "late_after": settings.get("late_after", "10:00"),
+        "working_hours": int(settings.get("working_hours", 8))
+    }
+
+
+@app.get("/settings/attendance")
+def get_settings():
+    return get_attendance_settings()
+
+
+@app.put("/settings/attendance")
+def update_settings(data: dict):
+    settings = {
+        "type": "attendance",
+        "duplicate_punch_minutes": int(data.get("duplicate_punch_minutes", 60)),
+        "report_days": int(data.get("report_days", 30)),
+        "late_after": data.get("late_after", "10:00"),
+        "working_hours": int(data.get("working_hours", 8))
+    }
+
+    settings_collection.update_one(
+        {"type": "attendance"},
+        {"$set": settings},
+        upsert=True
+    )
+
+    return {
+        "message": "Attendance settings updated",
+        "settings": settings
+    }
+
+
 @app.post("/attendance")
 def attendance(data: dict):
     try:
@@ -207,6 +253,9 @@ def attendance(data: dict):
                 "action": "error",
                 "message": "User not found"
             }
+
+        settings = get_attendance_settings()
+        duplicate_minutes = settings["duplicate_punch_minutes"]
 
         now = datetime.now()
         today_start = datetime(now.year, now.month, now.day, 0, 0, 0)
@@ -248,7 +297,7 @@ def attendance(data: dict):
         check_in_time = today_record.get("check_in")
         diff_minutes = (now - check_in_time).total_seconds() / 60
 
-        if diff_minutes < 60:
+        if diff_minutes < duplicate_minutes:
             return {
                 "name": user.get("name", "User"),
                 "action": "duplicate",
@@ -363,6 +412,54 @@ def today_stats():
         "absent_today": total - present,
         "total_employees": total
     }
+
+
+@app.get("/reports/attendance-summary")
+def attendance_summary(days: int = 30):
+    try:
+        settings = get_attendance_settings()
+        report_days = int(days or settings["report_days"])
+
+        today = datetime.now()
+        start_date = today - timedelta(days=report_days)
+
+        users = list(users_collection.find())
+        result = []
+
+        for user in users:
+            user_id = str(user["_id"])
+
+            records = list(attendance_collection.find({
+                "user_id": user_id,
+                "check_in": {"$gte": start_date}
+            }).sort("check_in", -1))
+
+            present_dates = set()
+
+            for record in records:
+                if record.get("check_in"):
+                    present_dates.add(record["check_in"].date())
+
+            present_days = len(present_dates)
+            absent_days = report_days - present_days
+            last_record = records[0] if records else None
+
+            result.append({
+                "user_id": user_id,
+                "name": user.get("name", "Unknown"),
+                "fingerprint_id": user.get("fingerprint_id"),
+                "total_days": report_days,
+                "present_days": present_days,
+                "absent_days": absent_days,
+                "last_check_in": last_record.get("check_in") if last_record else None,
+                "last_check_out": last_record.get("check_out") if last_record else None,
+                "status": "present" if present_days > 0 else "absent"
+            })
+
+        return result
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/attendance/user/{user_id}")
