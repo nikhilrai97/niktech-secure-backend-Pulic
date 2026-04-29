@@ -1,13 +1,16 @@
-from fastapi import FastAPI, HTTPException
-from database import users_collection, attendance_collection
-from models import user_model, attendance_model
-from auth import hash_password, verify_password, create_token
-from bson import ObjectId
 from datetime import datetime, timedelta
+
+from bson import ObjectId
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from pymongo import MongoClient
+
+from auth import create_token, hash_password, verify_password
+from database import attendance_collection, users_collection
+from models import attendance_model, user_model
+
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,88 +19,289 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MongoDB Connection
-client = MongoClient("mongodb://localhost:27017")
-db = client["attendance_db"]
-attendance_collection = db["attendance"]
+
+class UserUpdate(BaseModel):
+    name: str
+    email: str
+    role: str
+    Phone: str
+
+
+@app.get("/")
+def home():
+    return {"status": "server running"}
+
 
 # -------------------------
 # REGISTER USER
 # -------------------------
-from fastapi import HTTPException
-
 @app.post("/register")
 def register(user: dict):
-    try:
-        user["role"] = "user"
+    if users_collection.find_one({"email": user.get("email")}):
+        raise HTTPException(status_code=400, detail="Email already exists")
 
-        # check email exist
-        if users_collection.find_one({"email": user.get("email")}):
-            raise HTTPException(status_code=400, detail="Email already exists")
+    user["role"] = "user"
+    user["password"] = hash_password(user.get("password", ""))
 
-        # password hash
-        user["password"] = hash_password(user.get("password"))
+    result = users_collection.insert_one(user)
 
-        # insert
-        result = users_collection.insert_one(user)
+    return {
+        "message": "User registered successfully",
+        "id": str(result.inserted_id)
+    }
 
-        return {
-            "message": "User registered successfully",
-            "id": str(result.inserted_id)
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
 
 # -------------------------
 # LOGIN
 # -------------------------
 @app.post("/login")
 def login(data: dict):
-    user = users_collection.find_one({"email": data["email"]})
+    user = users_collection.find_one({"email": data.get("email")})
 
-    if not user or not verify_password(data["password"], user["password"]):
+    if not user or not verify_password(data.get("password", ""), user.get("password", "")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_token({"id": str(user["_id"])})
-    return {"token": token, "user": user_model(user)}
+
+    return {
+        "token": token,
+        "user": user_model(user)
+    }
+
 
 # -------------------------
-# GET USERS (ADMIN)
+# GET USERS
 # -------------------------
 @app.get("/users")
 def get_users():
     users = []
-    for u in users_collection.find():
-        u["_id"] = str(u["_id"]) # 🔥 fix
-        users.append(u)
+
+    for user in users_collection.find():
+        user["_id"] = str(user["_id"])
+        user.pop("password", None)
+        users.append(user)
+
     return users
+
+
 # -------------------------
-# CHECK IN (ESP32 / APP)
+# GET SINGLE USER
+# -------------------------
+@app.get("/users/{id}")
+def get_user(id: str):
+    user = users_collection.find_one({"_id": ObjectId(id)})
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user["_id"] = str(user["_id"])
+    user.pop("password", None)
+
+    return user
+
+
+# -------------------------
+# UPDATE USER
+# -------------------------
+@app.put("/users/{id}")
+def update_user(id: str, user: UserUpdate):
+    result = users_collection.update_one(
+        {"_id": ObjectId(id)},
+        {"$set": user.dict()}
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "User updated"}
+
+
+# -------------------------
+# DELETE USER
+# -------------------------
+@app.delete("/users/{user_id}")
+def delete_user(user_id: str):
+    result = users_collection.delete_one({"_id": ObjectId(user_id)})
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "User deleted"}
+
+
+# -------------------------
+# UPDATE PROFILE
+# -------------------------
+@app.put("/profile/{email}")
+def update_profile(email: str, data: dict):
+    result = users_collection.update_one(
+        {"email": email},
+        {"$set": {"name": data.get("name")}}
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "Profile updated"}
+
+
+# -------------------------
+# ADD FINGERPRINT / ENROLL REQUEST
+# -------------------------
+@app.put("/add-user/{user_id}")
+def add_user(user_id: str, data: dict):
+    fingerprint_id = data.get("fingerprint_id")
+
+    if fingerprint_id is None:
+        raise HTTPException(status_code=400, detail="fingerprint_id required")
+
+    result = users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "fingerprint_id": int(fingerprint_id),
+                "enroll": True
+            }
+        }
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"status": "fingerprint linked"}
+
+
+# -------------------------
+# ESP32: CHECK ENROLL
+# -------------------------
+@app.get("/check-enroll")
+def check_enroll():
+    user = users_collection.find_one({"enroll": True})
+
+    if not user:
+        return {"status": "none"}
+
+    return {
+        "status": "found",
+        "id": str(user["_id"]),
+        "fingerprint_id": int(user["fingerprint_id"]),
+        "name": user.get("name", "")
+    }
+
+
+# -------------------------
+# ESP32: ENROLL DONE
+# -------------------------
+@app.post("/enroll-done")
+def enroll_done(data: dict):
+    user_id = data.get("id")
+
+    if not user_id:
+        return {"status": "error", "message": "id required"}
+
+    result = users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"enroll": False}}
+    )
+
+    if result.matched_count == 0:
+        return {"status": "error", "message": "User not found"}
+
+    return {"status": "done"}
+
+
+# -------------------------
+# ESP32: ATTENDANCE
+# -------------------------
+@app.post("/attendance")
+def attendance(data: dict):
+    try:
+        fingerprint_id = data.get("fingerprint_id")
+
+        if fingerprint_id is None:
+            return {
+                "name": "ERROR",
+                "message": "fingerprint_id required"
+            }
+
+        fingerprint_id = int(fingerprint_id)
+
+        user = users_collection.find_one({
+            "$or": [
+                {"fingerprint_id": fingerprint_id},
+                {"fingerprint_id": str(fingerprint_id)}
+            ]
+        })
+
+        if not user:
+            return {
+                "name": "ERROR",
+                "message": "User not found"
+            }
+
+        record = {
+            "user_id": str(user["_id"]),
+            "fingerprint_id": fingerprint_id,
+            "name": user.get("name", ""),
+            "check_in": datetime.now(),
+            "status": "present"
+        }
+
+        attendance_collection.insert_one(record)
+
+        return {
+            "name": user.get("name", "User"),
+            "message": "Attendance marked"
+        }
+
+    except Exception as e:
+        return {
+            "name": "ERROR",
+            "message": str(e)
+        }
+
+
+# -------------------------
+# APP: CHECK IN
 # -------------------------
 @app.post("/attendance/checkin")
 def check_in(data: dict):
     fingerprint_id = data.get("fingerprint_id")
 
-    user = users_collection.find_one({"$or":[{"fingerprint_id": fingerprint_id},{"fingerprint_id":str(fingerprint_id)}]})
+    user = users_collection.find_one({
+        "$or": [
+            {"fingerprint_id": fingerprint_id},
+            {"fingerprint_id": str(fingerprint_id)}
+        ]
+    })
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     record = {
         "user_id": str(user["_id"]),
+        "fingerprint_id": fingerprint_id,
+        "name": user.get("name", ""),
         "check_in": datetime.now(),
         "status": "present"
     }
 
     attendance_collection.insert_one(record)
+
     return {"message": "Checked in"}
 
+
 # -------------------------
-# CHECK OUT
+# APP: CHECK OUT
 # -------------------------
 @app.post("/attendance/checkout")
 def check_out(data: dict):
-    record = attendance_collection.find_one({"_id": ObjectId(data["attendance_id"])})
+    attendance_id = data.get("attendance_id")
+
+    if not attendance_id:
+        raise HTTPException(status_code=400, detail="attendance_id required")
+
+    record = attendance_collection.find_one({"_id": ObjectId(attendance_id)})
 
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
@@ -109,21 +313,23 @@ def check_out(data: dict):
 
     return {"message": "Checked out"}
 
+
 # -------------------------
 # TODAY ATTENDANCE
 # -------------------------
 @app.get("/attendance/today")
 def today_attendance():
     today = datetime.now().date()
-
-    records = attendance_collection.find()
-
     result = []
-    for r in records:
-        if r["check_in"].date() == today:
-            result.append(attendance_model(r))
+
+    for record in attendance_collection.find():
+        check_in_time = record.get("check_in")
+
+        if check_in_time and check_in_time.date() == today:
+            result.append(attendance_model(record))
 
     return result
+
 
 # -------------------------
 # TODAY STATS
@@ -131,11 +337,12 @@ def today_attendance():
 @app.get("/stats/today")
 def today_stats():
     today = datetime.now().date()
-    records = attendance_collection.find()
-
     present = 0
-    for r in records:
-        if r["check_in"].date() == today:
+
+    for record in attendance_collection.find():
+        check_in_time = record.get("check_in")
+
+        if check_in_time and check_in_time.date() == today:
             present += 1
 
     total = users_collection.count_documents({})
@@ -144,101 +351,36 @@ def today_stats():
         "present_today": present,
         "absent_today": total - present,
         "total_employees": total
-        }
-@app.get("/attendance/{user_id}")
-def get_user_attendance(user_id: str):
-
-    records = attendance_collection.find({"user_id": user_id})
-
-    result = []
-    for r in records:
-        result.append(attendance_model(r))
-
-    return result
-@app.delete("/users/{user_id}")
-def delete_user(user_id: str):
- result = users_collection.delete_one({"_id":ObjectId(user_id)})
- if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="User not found")
- return {"message": "User deleted"}
- 
- 
- 
-@app.put("/profile/{email}")
-def update_profile(email: str, data:dict):
-    users_collection.update_one(
-        {"email": email},
-        {"$set": {"name": data.get("name"),
-        }})
-    return {"message": "Profile updated"}
-
-
-
-
-@app.get("/users/{id}")
-def get_user(id: str):
-    user = users_collection.find_one({"_id": ObjectId(id)})
-
-    if user:
-        user["_id"] = str(user["_id"]) # convert ObjectId to string
-        return user
-
-    return {"error": "User not found"}
-
-    from pydantic import BaseModel
-from bson import ObjectId
-
-class UserUpdate(BaseModel):
-    name: str
-    email: str
-    role: str
-    Phone: str
-
-    
-    
-@app.put("/users/{id}")
-def update_user(id: str, user: UserUpdate):
-    data = user.dict()
-
-    result = users_collection.update_one(
-        {"_id": ObjectId(id)},
-        {"$set": data}
-    )
-
-    return {"message": "User updated"}
-
-@app.post("/login")
-def login(data: dict):
-    user = users_collection.find_one({"email": data["email"]})
-
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email")
-
-    user["_id"] = str(user["_id"])
-
-    return {
-        "user": user,
-        "token": "dummy"
     }
 
-    from datetime import datetime
 
+# -------------------------
+# USER ATTENDANCE
+# -------------------------
 @app.get("/attendance/user/{user_id}")
-def get_user_attendance(user_id: str):
+def get_user_attendance_records(user_id: str):
     records = list(attendance_collection.find({"user_id": user_id}))
+    result = []
 
-    for r in records:
-        r["_id"] = str(r["_id"])
-        r["check_in"] = r["check_in"].strftime("%Y-%m-%d %H:%M")
+    for record in records:
+        record["_id"] = str(record["_id"])
 
-    return records
+        if record.get("check_in"):
+            record["check_in"] = record["check_in"].strftime("%Y-%m-%d %H:%M")
 
-# =========================
-# 📊 WEEKLY ATTENDANCE
-# =========================
+        if record.get("check_out"):
+            record["check_out"] = record["check_out"].strftime("%Y-%m-%d %H:%M")
+
+        result.append(record)
+
+    return result
+
+
+# -------------------------
+# WEEKLY ATTENDANCE
+# -------------------------
 @app.get("/attendance/weekly/{user_id}")
 def weekly_attendance(user_id: str):
-    
     today = datetime.now()
     last_7_days = today - timedelta(days=7)
 
@@ -249,26 +391,28 @@ def weekly_attendance(user_id: str):
 
     data = []
 
-    for r in records:
-        if r.get("check_in") and r.get("check_out"):
-            hours = (r["check_out"] - r["check_in"]).total_seconds() / 3600
+    for record in records:
+        check_in_time = record.get("check_in")
+        check_out_time = record.get("check_out")
+
+        if check_in_time and check_out_time:
+            hours = (check_out_time - check_in_time).total_seconds() / 3600
         else:
             hours = 0
 
         data.append({
-            "date": r["check_in"].strftime("%d"),
+            "date": check_in_time.strftime("%d") if check_in_time else "",
             "hours": round(hours, 2)
         })
 
     return data
 
 
-# =========================
-# 📅 MONTHLY ATTENDANCE
-# =========================
+# -------------------------
+# MONTHLY ATTENDANCE
+# -------------------------
 @app.get("/attendance/monthly/{user_id}")
 def monthly_attendance(user_id: str):
-    
     today = datetime.now()
     last_30_days = today - timedelta(days=30)
 
@@ -279,35 +423,35 @@ def monthly_attendance(user_id: str):
 
     data = []
 
-    for r in records:
-        if r.get("check_in") and r.get("check_out"):
-            hours = (r["check_out"] - r["check_in"]).total_seconds() / 3600
+    for record in records:
+        check_in_time = record.get("check_in")
+        check_out_time = record.get("check_out")
+
+        if check_in_time and check_out_time:
+            hours = (check_out_time - check_in_time).total_seconds() / 3600
         else:
             hours = 0
 
         data.append({
-            "day": r["check_in"].strftime("%d"),
+            "day": check_in_time.strftime("%d") if check_in_time else "",
             "hours": round(hours, 2)
         })
 
     return data
 
 
-# =========================
-# 📌 STATS (Present/Absent)
-# =========================
+# -------------------------
+# ATTENDANCE STATS BY USER
+# -------------------------
 @app.get("/attendance/stats/{user_id}")
 def attendance_stats(user_id: str):
-
-    records = list(attendance_collection.find({
-        "user_id": user_id
-    }))
+    records = list(attendance_collection.find({"user_id": user_id}))
 
     present = 0
     absent = 0
 
-    for r in records:
-        if r.get("status") == "present":
+    for record in records:
+        if record.get("status") == "present":
             present += 1
         else:
             absent += 1
@@ -317,100 +461,16 @@ def attendance_stats(user_id: str):
         "absent": absent
     }
 
-@app.post("/attendance")
-def mark_attendance(data: dict):
-    fingerprint_id = data.get("fingerprint_id")
 
-    user = users_collection.find_one({"fingerprint_id": fingerprint_id})
+# -------------------------
+# ATTENDANCE BY USER ID
+# -------------------------
+@app.get("/attendance/{user_id}")
+def get_attendance_by_user_id(user_id: str):
+    records = attendance_collection.find({"user_id": user_id})
+    result = []
 
-    if not user:
-        return {"error": "User not found"}
+    for record in records:
+        result.append(attendance_model(record))
 
-    attendance = {
-        "user_id": str(user["_id"]),
-        "check_in": datetime.now(),
-        "status": "present"
-    }
-
-    attendance_collection.insert_one(attendance)
-
-    return {"message": "Attendance marked"}
-
-
-from pymongo import MongoClient
-import os
-
-MONGO_URL = os.getenv("MONGO_URL")
-
-client = MongoClient(MONGO_URL)
-db = client["niktech"]
-collection = db["attendance"]
-
-@app.get("/test")
-def test_insert():
-    collection.insert_one({
-        "name": "Nikhil",
-        "status": "Present"
-    })
-    return {"message": "Data inserted"}
-from bson import ObjectId
-
-@app.get("/check-enroll")
-def check_enroll():
-    user = users_collection.find_one({"enroll": True})
-    if not user:
-        return {"status": "none"}
-
-    return {
-        "status": "pending",
-        "id": str(user["_id"]),
-        "fingerprint_id": int(user["fingerprint_id"]),
-        "name": user["name"]
-    }
-@app.post("/enroll-done")
-def enroll_done(data: dict):
-    users_collection.update_one(
-        {"_id": ObjectId(data["id"])},
-        {"$set": {"enroll": False}}
-    )
-    return {"status": "done"}
-
-@app.post("/attendance")
-def attendance(data: dict):
-    fingerprint_id = int(data.get("fingerprint_id"))
-
-    user = users_collection.find_one({
-        "fingerprint_id": fingerprint_id
-    })
-
-    if not user:
-        return {"name": "ERROR"}
-
-    attendance = {
-        "user_id": str(user["_id"]),
-        "check_in": datetime.now(),
-        "status": "present"
-    }
-
-    attendance_collection.insert_one(attendance)
-
-    return {
-        "name": user["name"]
-    }
-from bson import ObjectId
-
-@app.put("/add-user/{user_id}")
-def add_user(user_id: str, data: dict):
-
-    users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {
-            "$set": {
-                "fingerprint_id": data["fingerprint_id"],
-                "enroll": True
-            }
-        }
-    )
-
-    return {"status": "fingerprint linked"}
-
+    return result
