@@ -1,22 +1,17 @@
-def user_model(user):
-    return {
-        "id": str(user["_id"]),
-        "name": user.get("name"),
-        "email": user.get("email"),
-        "role": user.get("role", "employee"),
-        "fingerprint_id": user.get("fingerprint_id"),
-        "department": user.get("department"),
-        "phone": user.get("phone"),
-    }
+from pymongo import MongoClient
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
-def attendance_model(record):
-    return {
-        "id": str(record["_id"]),
-        "user_id": record.get("user_id"),
-        "fingerprint_id": record.get("fingerprint_id"),
-        "name": record.get("name"),
-        "check_in": record.get("check_in"),
-        "check_out": record.get("check_out"),
-        "status": record.get("status", "present"),
-    }
+MONGO_URL = os.getenv("MONGO_URL")
+DB_NAME = os.getenv("DB_NAME")
+
+client = MongoClient(MONGO_URL)
+db = client[DB_NAME]
+
+users_collection = db["users"]
+attendance_collection = db["attendance"]
+settings_collection = db["settings"]
+leave_collection = db["leaves"]
+holiday_collection = db["holidays"]
