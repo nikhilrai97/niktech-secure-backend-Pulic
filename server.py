@@ -23,6 +23,13 @@ def now_ist():
     return datetime.now(IST).replace(tzinfo=None)
 
 
+def object_id(id_value: str):
+    try:
+        return ObjectId(id_value)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid id")
+
+
 app = FastAPI()
 
 app.add_middleware(
@@ -83,6 +90,7 @@ def get_users():
     users = []
 
     for user in users_collection.find():
+        user["id"] = str(user["_id"])
         user["_id"] = str(user["_id"])
         user.pop("password", None)
         users.append(user)
@@ -92,11 +100,12 @@ def get_users():
 
 @app.get("/users/{id}")
 def get_user(id: str):
-    user = users_collection.find_one({"_id": ObjectId(id)})
+    user = users_collection.find_one({"_id": object_id(id)})
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    user["id"] = str(user["_id"])
     user["_id"] = str(user["_id"])
     user.pop("password", None)
 
@@ -106,7 +115,7 @@ def get_user(id: str):
 @app.put("/users/{id}")
 def update_user(id: str, user: UserUpdate):
     result = users_collection.update_one(
-        {"_id": ObjectId(id)},
+        {"_id": object_id(id)},
         {"$set": user.dict()}
     )
 
@@ -118,7 +127,7 @@ def update_user(id: str, user: UserUpdate):
 
 @app.delete("/users/{user_id}")
 def delete_user(user_id: str):
-    result = users_collection.delete_one({"_id": ObjectId(user_id)})
+    result = users_collection.delete_one({"_id": object_id(user_id)})
 
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
@@ -147,7 +156,7 @@ def add_user(user_id: str, data: dict):
         raise HTTPException(status_code=400, detail="fingerprint_id required")
 
     result = users_collection.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": object_id(user_id)},
         {
             "$set": {
                 "fingerprint_id": int(fingerprint_id),
@@ -185,7 +194,7 @@ def enroll_done(data: dict):
         return {"status": "error", "message": "id required"}
 
     result = users_collection.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": object_id(user_id)},
         {"$set": {"enroll": False}}
     )
 
@@ -300,7 +309,7 @@ def apply_leave(data: dict):
     if not user_id or not reason or not start_date or not end_date:
         raise HTTPException(status_code=400, detail="Missing fields")
 
-    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    user = users_collection.find_one({"_id": object_id(user_id)})
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -326,6 +335,7 @@ def my_leaves(user_id: str):
     leaves = list(leave_collection.find({"user_id": user_id}).sort("applied_at", -1))
 
     for leave in leaves:
+        leave["id"] = str(leave["_id"])
         leave["_id"] = str(leave["_id"])
 
     return leaves
@@ -336,6 +346,7 @@ def all_leaves():
     leaves = list(leave_collection.find().sort("applied_at", -1))
 
     for leave in leaves:
+        leave["id"] = str(leave["_id"])
         leave["_id"] = str(leave["_id"])
 
     return leaves
@@ -349,7 +360,7 @@ def update_leave_status(leave_id: str, data: dict):
         raise HTTPException(status_code=400, detail="Invalid status")
 
     result = leave_collection.update_one(
-        {"_id": ObjectId(leave_id)},
+        {"_id": object_id(leave_id)},
         {"$set": {"status": status, "updated_at": now_ist()}}
     )
 
@@ -387,6 +398,7 @@ def get_holidays():
     holidays = list(holiday_collection.find().sort("date", 1))
 
     for holiday in holidays:
+        holiday["id"] = str(holiday["_id"])
         holiday["_id"] = str(holiday["_id"])
 
     return holidays
@@ -394,7 +406,7 @@ def get_holidays():
 
 @app.delete("/holiday/{holiday_id}")
 def delete_holiday(holiday_id: str):
-    result = holiday_collection.delete_one({"_id": ObjectId(holiday_id)})
+    result = holiday_collection.delete_one({"_id": object_id(holiday_id)})
 
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Holiday not found")
@@ -542,7 +554,7 @@ def check_out(data: dict):
     if not attendance_id:
         raise HTTPException(status_code=400, detail="attendance_id required")
 
-    record = attendance_collection.find_one({"_id": ObjectId(attendance_id)})
+    record = attendance_collection.find_one({"_id": object_id(attendance_id)})
 
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
@@ -781,6 +793,9 @@ def attendance_summary(days: int = 30):
             non_working_dates = holiday_dates | leave_dates
             working_days = report_days - len(non_working_dates)
 
+            if working_days < 0:
+                working_days = 0
+
             present_days = len(completed_dates - non_working_dates)
             incomplete_days = len((incomplete_dates - completed_dates) - non_working_dates)
             absent_days = working_days - present_days
@@ -891,10 +906,15 @@ def monthly_attendance(user_id: str):
 
 @app.get("/attendance/stats/{user_id}")
 def attendance_stats(user_id: str):
-    today = now_ist().date()
-    start_date = today - timedelta(days=29)
-
     calendar = attendance_calendar(user_id, 30)
+
+    if isinstance(calendar, dict):
+        return {
+            "present": 0,
+            "absent": 0,
+            "leave": 0,
+            "holiday": 0
+        }
 
     present = 0
     absent = 0
